@@ -5,49 +5,39 @@ const fs = require("fs");
 const app = express();
 const config = JSON.parse(fs.readFileSync("config.json"));
 
-// Demo/Paper trading durumu
 let balance = config.startingBalance || 50;
-let lastPairs = [];        // Son taranan gerçek coinler
-let openTrades = [];       // Açık demo işlemler
-let closedTrades = [];     // Kapanan demo işlemler
+let lastPairs = [];
+let openTrades = [];
+let closedTrades = [];
 
 const MAX_OPEN_TRADES = config.maxOpenTrades || 5;
 
-// 🔍 Risk tipi hesapla
+// Risk hesaplama
 function getRiskType(liquidity, volume) {
   if (liquidity < 20000 || volume < 5000) return "AGGRESSIVE"; // çok riskli
   if (liquidity < 100000) return "CAUTIOUS";                   // orta
-  return "SAFE";                                               // daha oturmuş
+  return "SAFE";                                               // güvenli
 }
 
-// 💰 Riske göre pozisyon büyüklüğü (bakiyenin yüzdesi)
+// Pozisyon boyutu
 function getPositionFraction(risk) {
   if (risk === "AGGRESSIVE") return 0.05; // %5
-  if (risk === "CAUTIOUS") return 0.10;   // %10
-  return 0.20;                            // %20
+  if (risk === "CAUTIOUS")  return 0.10; // %10
+  return 0.20;                           // %20
 }
 
-// 🎯 Riske göre hedef ve stop
+// TP/SL hesaplama
 function getTargets(risk, entryPrice) {
   if (risk === "AGGRESSIVE") {
-    return {
-      takeProfit: entryPrice * 1.05, // +%5
-      stopLoss: entryPrice * 0.92    // -%8
-    };
+    return { takeProfit: entryPrice * 1.05, stopLoss: entryPrice * 0.90 };
   }
   if (risk === "CAUTIOUS") {
-    return {
-      takeProfit: entryPrice * 1.10, // +%10
-      stopLoss: entryPrice * 0.90    // -%10
-    };
+    return { takeProfit: entryPrice * 1.10, stopLoss: entryPrice * 0.88 };
   }
-  return {
-    takeProfit: entryPrice * 1.15,   // +%15
-    stopLoss: entryPrice * 0.88      // -%12
-  };
+  return { takeProfit: entryPrice * 1.15, stopLoss: entryPrice * 0.85 };
 }
 
-// 🔍 DexScreener'dan gerçek Solana verisi çek
+// Dex tarama
 async function scanDex() {
   try {
     const res = await axios.get(
@@ -57,62 +47,51 @@ async function scanDex() {
 
     const pairs = res.data?.pairs || [];
 
-    // Filtre: minimum likidite ve hacim
-    const filtered = pairs.filter(p => {
-      const liq = p.liquidity?.usd || 0;
-      const vol = p.volume?.h24 || 0;
-      const price = Number(p.priceUsd || 0);
+    if (pairs.length === 0) {
+      console.log("⚠️ DexScreener boş döndürdü.");
+      return;
+    }
 
-      return (
-        liq >= 20000 &&        // en az 20k likidite
-        vol >= 5000 &&        // en az 5k 24s hacim
-        price > 0             // fiyat düzgün
-      );
-    });
-
-    // Hacme göre sırala, ilk 10 coini al
-    const top = filtered
+    // **HİÇ FİLTRE YOK** — tüm coinler içeri alınır
+    const top = pairs
       .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
       .slice(0, 10);
 
     lastPairs = top.map(p => {
-      const liq = p.liquidity?.usd || 0;
-      const vol = p.volume?.h24 || 0;
+      const liquidity = p.liquidity?.usd || 0;
+      const volume = p.volume?.h24 || 0;
       const price = Number(p.priceUsd || 0);
-      const risk = getRiskType(liq, vol);
+      const risk = getRiskType(liquidity, volume);
 
       return {
-        id: p.pairAddress || p.url || p.pairCreatedAt || p.baseToken?.address || p.baseToken?.symbol,
+        id: p.pairAddress || p.url || p.baseToken?.address,
         name: p.baseToken?.name || p.baseToken?.symbol || "Unknown",
         symbol: p.baseToken?.symbol || "?",
         price,
-        liquidity: liq,
-        volume: vol,
+        liquidity,
+        volume,
         risk
       };
     });
 
-    console.log("🔍 Dex tarandı | Coin sayısı:", lastPairs.length);
+    console.log("🔍 Gerçek coinler çekildi:", lastPairs.length);
 
-    // Yeni verilere göre demo trade simülasyonu yap
     simulateTrading();
   } catch (err) {
-    console.log("❌ DexScreener hatası:", err.message);
-    // Hata olursa eski lastPairs kalır, yeni trade açmayız
+    console.log("❌ DexScreener hata:", err.message);
   }
 }
 
-// 🛒 Demo alım (sadece kağıt üstünde)
+// Demo ALIŞ
 function openDemoTrade(coin) {
   if (openTrades.length >= MAX_OPEN_TRADES) return;
 
-  const alreadyOpen = openTrades.find(t => t.coinId === coin.id);
-  if (alreadyOpen) return;
+  if (openTrades.find(t => t.coinId === coin.id)) return;
 
   const fraction = getPositionFraction(coin.risk);
   const amountUsd = balance * fraction;
 
-  if (amountUsd < 1) return; // 1$ altına uğraşmayalım
+  if (amountUsd < 1) return;
 
   const { takeProfit, stopLoss } = getTargets(coin.risk, coin.price);
 
@@ -130,82 +109,62 @@ function openDemoTrade(coin) {
     openedAt: new Date().toISOString()
   });
 
-  console.log(
-    `🟢 DEMO BUY | ${coin.name} | Risk: ${coin.risk} | Amount: $${amountUsd.toFixed(
-      2
-    )} | Entry: ${coin.price}`
-  );
+  console.log(`🟢 BUY | ${coin.name} | Risk: ${coin.risk} | Amount: $${amountUsd.toFixed(2)}`);
 }
 
-// 💸 Demo satış (kağıt üzerinde kapatma)
+// Demo SATIŞ
 function updateDemoTrades() {
-  const remainingTrades = [];
+  const remaining = [];
 
   for (const t of openTrades) {
     const coin = lastPairs.find(c => c.id === t.coinId);
+
     if (!coin) {
-      // coin yoksa trade'i olduğu gibi taşı
-      remainingTrades.push(t);
+      remaining.push(t);
       continue;
     }
 
-    const currentPrice = coin.price;
+    const price = coin.price;
 
-    if (currentPrice >= t.takeProfit || currentPrice <= t.stopLoss) {
-      // pozisyon kapanıyor
-      const pnlMultiplier = currentPrice / t.entryPrice;
-      const finalAmount = t.amountUsd * pnlMultiplier;
-      const profit = finalAmount - t.amountUsd;
+    if (price >= t.takeProfit || price <= t.stopLoss) {
+      const multiplier = price / t.entryPrice;
+      const finalAmount = t.amountUsd * multiplier;
+
       balance += finalAmount;
 
       closedTrades.unshift({
         ...t,
-        exitPrice: currentPrice,
+        exitPrice: price,
         closedAt: new Date().toISOString(),
-        profit
+        profit: finalAmount - t.amountUsd
       });
 
-      console.log(
-        `🔴 DEMO SELL | ${t.coinName} | PnL: $${profit.toFixed(
-          2
-        )} | Exit: ${currentPrice}`
-      );
+      console.log(`🔴 SELL | ${t.coinName} | PnL: $${(finalAmount - t.amountUsd).toFixed(2)}`);
     } else {
-      // açık kalmaya devam
-      remainingTrades.push(t);
+      remaining.push(t);
     }
   }
 
-  // Son 20 kapalı işlemi tut
-  closedTrades = closedTrades.slice(0, 20);
-  openTrades = remainingTrades;
+  openTrades = remaining;
+  closedTrades = closedTrades.slice(0, 25);
 }
 
-// 🔁 Demo trading döngüsü
+// Demo trading döngüsü
 function simulateTrading() {
-  // Önce mevcut açık işlemleri güncelle
   updateDemoTrades();
-
-  // Sonra uygun coinlere göre yeni işlemler aç
-  for (const coin of lastPairs) {
-    openDemoTrade(coin);
-  }
+  for (const coin of lastPairs) openDemoTrade(coin);
 }
 
-// İlk başta bir kere tara
+// İlk tarama
 scanDex();
+// Periyodik tarama
+setInterval(scanDex, (config.scanIntervalSeconds || 30) * 1000);
 
-// Sonra config'e göre belirli aralıklarla tara
-const intervalMs = (config.scanIntervalSeconds || 30) * 1000;
-setInterval(scanDex, intervalMs);
-
-// 🌐 Web Panel
+// Web panel
 const PORT = process.env.PORT || 8080;
 
 app.get("/", (req, res) => {
-  const coinRows = lastPairs
-    .map(
-      c => `
+  const coins = lastPairs.map(c => `
     <tr>
       <td>${c.name} (${c.symbol})</td>
       <td>$${c.price.toFixed(6)}</td>
@@ -213,84 +172,55 @@ app.get("/", (req, res) => {
       <td>$${c.volume.toLocaleString()}</td>
       <td>${c.risk}</td>
     </tr>
-  `
-    )
-    .join("");
+  `).join("");
 
-  const openRows = openTrades
-    .map(
-      t => `
+  const open = openTrades.map(t => `
     <tr>
-      <td>${t.coinName} (${t.symbol})</td>
+      <td>${t.coinName}</td>
       <td>${t.risk}</td>
       <td>$${t.amountUsd.toFixed(2)}</td>
       <td>$${t.entryPrice.toFixed(6)}</td>
       <td>TP: $${t.takeProfit.toFixed(6)}<br>SL: $${t.stopLoss.toFixed(6)}</td>
     </tr>
-  `
-    )
-    .join("");
+  `).join("");
 
-  const closedRows = closedTrades
-    .map(
-      t => `
+  const closed = closedTrades.map(t => `
     <tr>
-      <td>${t.coinName} (${t.symbol})</td>
+      <td>${t.coinName}</td>
       <td>${t.risk}</td>
       <td>$${t.amountUsd.toFixed(2)}</td>
       <td>$${t.entryPrice.toFixed(6)}</td>
       <td>$${t.exitPrice.toFixed(6)}</td>
       <td>$${t.profit.toFixed(2)}</td>
     </tr>
-  `
-    )
-    .join("");
+  `).join("");
 
   res.send(`
     <h1>🤖 Solana Demo Trading Bot</h1>
-    <p><b>Mode:</b> DEMO (GERÇEK ALIM-SATIM YOK)</p>
+    <p><b>Mode:</b> DEMO (Gerçek Alım-Satım Yok)</p>
     <p><b>Balance:</b> $${balance.toFixed(2)}</p>
     <p><b>Open Trades:</b> ${openTrades.length}</p>
 
-    <h2>📊 Takip Edilen Gerçek Coinler (DexScreener)</h2>
+    <h2>📊 Gerçek Dex Coinleri</h2>
     <table border="1" cellpadding="6">
-      <tr>
-        <th>Coin</th>
-        <th>Fiyat</th>
-        <th>Likidite</th>
-        <th>24s Hacim</th>
-        <th>Risk</th>
-      </tr>
-      ${coinRows || "<tr><td colspan='5'>Şu an uygun coin bulunamadı veya DexScreener cevap vermedi.</td></tr>"}
+      <tr><th>Coin</th><th>Fiyat</th><th>Likidite</th><th>Hacim</th><th>Risk</th></tr>
+      ${coins || "<tr><td colspan='5'>Henüz veri yok...</td></tr>"}
     </table>
 
     <h2>💼 Açık Demo İşlemler</h2>
     <table border="1" cellpadding="6">
-      <tr>
-        <th>Coin</th>
-        <th>Risk</th>
-        <th>Miktar (USD)</th>
-        <th>Alış Fiyatı</th>
-        <th>Hedefler</th>
-      </tr>
-      ${openRows || "<tr><td colspan='5'>Açık demo işlem yok.</td></tr>"}
+      <tr><th>Coin</th><th>Risk</th><th>USD</th><th>Entry</th><th>Targets</th></tr>
+      ${open || "<tr><td colspan='5'>Açık işlem yok.</td></tr>"}
     </table>
 
     <h2>📜 Kapanan Demo İşlemler</h2>
     <table border="1" cellpadding="6">
-      <tr>
-        <th>Coin</th>
-        <th>Risk</th>
-        <th>Miktar (USD)</th>
-        <th>Alış</th>
-        <th>Satış</th>
-        <th>Kâr/Zarar</th>
-      </tr>
-      ${closedRows || "<tr><td colspan='6'>Henüz kapanan demo işlem yok.</td></tr>"}
+      <tr><th>Coin</th><th>Risk</th><th>USD</th><th>Entry</th><th>Exit</th><th>PnL</th></tr>
+      ${closed || "<tr><td colspan='6'>Henüz kapanan yok.</td></tr>"}
     </table>
   `);
 });
 
 app.listen(PORT, () => {
-  console.log("🌐 Web server running on port", PORT);
+  console.log("🌐 Server running on", PORT);
 });
