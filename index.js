@@ -10,8 +10,9 @@ let openTrades = [];
 let lastPairs = [];
 
 console.log("🤖 DEMO BOT BAŞLADI");
+console.log("💰 Başlangıç bakiyesi:", balance, "$");
 
-// 🔍 RİSK HESABI
+// 🔍 RİSK HESAPLAMA
 function calculateRisk(pair) {
   const liquidity = pair.liquidity?.usd || 0;
   const volume = pair.volume?.h24 || 0;
@@ -21,7 +22,7 @@ function calculateRisk(pair) {
   return "🟩 Güvenli";
 }
 
-// 🔍 DEX TARAMA
+// 🔍 DEXSCREENER TARAMA
 async function scanDex() {
   try {
     const res = await axios.get(
@@ -29,8 +30,8 @@ async function scanDex() {
     );
 
     lastPairs = res.data.pairs.slice(0, 10).map(pair => ({
-      name: pair.baseToken.name,
-      price: pair.priceUsd,
+      name: pair.baseToken?.name || "Unknown",
+      price: pair.priceUsd || 0,
       liquidity: pair.liquidity?.usd || 0,
       volume: pair.volume?.h24 || 0,
       risk: calculateRisk(pair)
@@ -42,6 +43,10 @@ async function scanDex() {
   }
 }
 
+// ⏱ BOT AÇILIR AÇILMAZ TARA
+scanDex();
+
+// ⏱ BELİRLİ ARALIKLARLA TARA
 setInterval(scanDex, config.scanIntervalSeconds * 1000);
 
 // 🌐 WEB PANEL
