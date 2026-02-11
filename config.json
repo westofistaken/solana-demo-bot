@@ -1,0 +1,13 @@
+{
+  "mode": "demo",
+  "startingBalance": 50,
+  "maxOpenTrades": 5,
+  "scanIntervalSeconds": 30,
+  "tradeAmount": {
+    "aggressive": 1.5,
+    "balanced": 2.5,
+    "safe": 4
+  },
+  "stopLossPercent": -15,
+  "takeProfit": [25, 60, 120]
+}
