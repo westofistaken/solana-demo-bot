@@ -7,109 +7,120 @@ const config = JSON.parse(fs.readFileSync("config.json"));
 
 let balance = config.startingBalance;
 let lastPairs = [];
+let trades = [];
 
 console.log("🤖 DEMO BOT BAŞLADI");
 
-// 🔍 RİSK HESAPLAMA
-function calculateRisk(liquidity, volume) {
-  if (liquidity < 20000 || volume < 5000) return "🟥 Agresif";
-  if (liquidity < 100000) return "🟨 Temkinli";
-  return "🟩 Güvenli";
+// 🔍 RİSK HESABI
+function riskType(liquidity, volume) {
+  if (liquidity < 20000 || volume < 5000) return "AGGRESSIVE";
+  if (liquidity < 100000) return "CAUTIOUS";
+  return "SAFE";
 }
 
-// 🧪 FAKE COIN (YEDEK)
+// 💰 RİSKE GÖRE POZİSYON
+function positionSize(risk) {
+  if (risk === "AGGRESSIVE") return 0.05; // %5
+  if (risk === "CAUTIOUS") return 0.10;   // %10
+  return 0.20;                            // %20
+}
+
+// 🧪 MOCK COINLER
 function loadMockPairs() {
   lastPairs = [
-    {
-      name: "TESTINU",
-      price: 0.000012,
-      liquidity: 12000,
-      volume: 3000,
-      risk: calculateRisk(12000, 3000)
-    },
-    {
-      name: "MOONCAT",
-      price: 0.0021,
-      liquidity: 55000,
-      volume: 12000,
-      risk: calculateRisk(55000, 12000)
-    },
-    {
-      name: "SOLGOD",
-      price: 0.45,
-      liquidity: 320000,
-      volume: 98000,
-      risk: calculateRisk(320000, 98000)
-    }
+    { name: "TESTINU", price: 0.000012, liquidity: 12000, volume: 3000 },
+    { name: "MOONCAT", price: 0.0021, liquidity: 55000, volume: 12000 },
+    { name: "SOLGOD", price: 0.45, liquidity: 320000, volume: 98000 }
   ];
 }
 
-// 🔍 DEXSCREENER TARAMA
-async function scanDex() {
-  try {
-    const res = await axios.get(
-      "https://api.dexscreener.com/latest/dex/pairs/solana",
-      { timeout: 5000 }
-    );
+// 🛒 DEMO ALIM
+function tryBuy(pair) {
+  const risk = riskType(pair.liquidity, pair.volume);
+  const size = positionSize(risk);
+  const amount = balance * size;
 
-    if (!res.data.pairs || res.data.pairs.length === 0) {
-      console.log("⚠️ Dex boş döndü → mock veri kullanıldı");
-      loadMockPairs();
-      return;
-    }
+  if (amount < 1) return;
 
-    lastPairs = res.data.pairs.slice(0, 5).map(pair => ({
-      name: pair.baseToken?.name || "Unknown",
-      price: pair.priceUsd || 0,
-      liquidity: pair.liquidity?.usd || 0,
-      volume: pair.volume?.h24 || 0,
-      risk: calculateRisk(
-        pair.liquidity?.usd || 0,
-        pair.volume?.h24 || 0
-      )
-    }));
+  balance -= amount;
 
-    console.log("🔍 Gerçek Dex verisi alındı");
-  } catch (err) {
-    console.log("❌ Dex hata → mock veri kullanıldı");
-    loadMockPairs();
-  }
+  trades.push({
+    coin: pair.name,
+    buyPrice: pair.price,
+    amount,
+    risk,
+    target: pair.price * (risk === "AGGRESSIVE" ? 1.03 : 1.05)
+  });
 }
 
-// hemen çalıştır
-scanDex();
-setInterval(scanDex, config.scanIntervalSeconds * 1000);
+// 💸 DEMO SATIM
+function trySell() {
+  trades = trades.filter(t => {
+    const current = lastPairs.find(p => p.name === t.coin);
+    if (!current) return true;
+
+    if (current.price >= t.target) {
+      const profit = t.amount * 1.05;
+      balance += profit;
+      return false;
+    }
+    return true;
+  });
+}
+
+// 🔁 BOT DÖNGÜSÜ
+function botLoop() {
+  loadMockPairs();
+
+  lastPairs.forEach(pair => {
+    if (!trades.find(t => t.coin === pair.name)) {
+      tryBuy(pair);
+    }
+  });
+
+  trySell();
+}
+
+setInterval(botLoop, 5000);
 
 // 🌐 WEB PANEL
 const PORT = process.env.PORT || 8080;
 
 app.get("/", (req, res) => {
-  const rows = lastPairs.map(c => `
+  const coinRows = lastPairs.map(p => `
     <tr>
-      <td>${c.name}</td>
-      <td>$${Number(c.price).toFixed(6)}</td>
-      <td>$${Number(c.liquidity).toLocaleString()}</td>
-      <td>$${Number(c.volume).toLocaleString()}</td>
-      <td>${c.risk}</td>
+      <td>${p.name}</td>
+      <td>$${p.price}</td>
+      <td>$${p.liquidity}</td>
+      <td>$${p.volume}</td>
+      <td>${riskType(p.liquidity, p.volume)}</td>
+    </tr>
+  `).join("");
+
+  const tradeRows = trades.map(t => `
+    <tr>
+      <td>${t.coin}</td>
+      <td>${t.risk}</td>
+      <td>$${t.amount.toFixed(2)}</td>
+      <td>$${t.buyPrice}</td>
+      <td>$${t.target.toFixed(6)}</td>
     </tr>
   `).join("");
 
   res.send(`
     <h1>🤖 Solana Demo Trading Bot</h1>
-    <p>Status: Running</p>
-    <p>Mode: DEMO</p>
-    <p>Balance: $${balance.toFixed(2)}</p>
+    <p><b>Balance:</b> $${balance.toFixed(2)}</p>
 
-    <h2>📊 Son Taranan Coinler</h2>
-    <table border="1" cellpadding="6">
-      <tr>
-        <th>Coin</th>
-        <th>Fiyat</th>
-        <th>Likidite</th>
-        <th>24s Hacim</th>
-        <th>Risk</th>
-      </tr>
-      ${rows}
+    <h2>📊 Coinler</h2>
+    <table border="1">
+      <tr><th>Coin</th><th>Fiyat</th><th>Likidite</th><th>Hacim</th><th>Risk</th></tr>
+      ${coinRows}
+    </table>
+
+    <h2>💼 Açık İşlemler</h2>
+    <table border="1">
+      <tr><th>Coin</th><th>Risk</th><th>Miktar</th><th>Alış</th><th>Hedef</th></tr>
+      ${tradeRows}
     </table>
   `);
 });
